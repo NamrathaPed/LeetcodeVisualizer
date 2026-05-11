@@ -2,78 +2,52 @@ export const TRACER_PYTHON = `
 import sys
 import json
 import traceback
-import copy
 
 def trace_execution(code, entry_point, args_input):
     snapshots = []
-    
-    def tracer(frame, event, arg):
-        if event not in ('line', 'return', 'call'):
-            return tracer
-            
-        filename = frame.f_code.co_filename
-        if filename != '<string>':
-            return tracer
-            
-        line_no = frame.f_lineno
-        
-        # Build call stack
-        call_stack = []
-        curr_frame = frame
-        while curr_frame:
-            if curr_frame.f_code.co_filename == '<string>' and curr_frame.f_code.co_name != '<module>':
-                frame_locals = {}
-                for k, v in curr_frame.f_locals.items():
-                    if not k.startswith('__') and k != 'self': # Ignore self to reduce clutter
-                        try:
-                            frame_locals[k] = serialize_value(v)
-                        except Exception:
-                            frame_locals[k] = str(v)
-                call_stack.append({
-                    'name': curr_frame.f_code.co_name,
-                    'locals': frame_locals,
-                    'line': curr_frame.f_lineno
-                })
-            curr_frame = curr_frame.f_back
-        call_stack.reverse()
-        
-        local_vars = {}
-        for k, v in frame.f_locals.items():
-            if k.startswith('__'):
-                continue
-            try:
-                local_vars[k] = serialize_value(v)
-            except Exception:
-                local_vars[k] = str(v)
-                
-        # For 'call' events, we might not want to capture a full snapshot unless we want to see the entry.
-        # Let's capture it.
-        snapshots.append({
-            'line': line_no,
-            'locals': local_vars,
-            'callStack': call_stack,
-            'event': event,
-            'returnValue': serialize_value(arg) if event == 'return' else None
-        })
-        return tracer
+    prev_snap = {}
 
-    def serialize_value(v):
-        if isinstance(v, (int, float, str, bool, type(None))):
+    # --- Serialization ---
+
+    def serialize_value(v, depth=0):
+        if depth > 8:
+            return '...'
+        if isinstance(v, bool):
             return v
+        if isinstance(v, (int, float, str, type(None))):
+            return v
+        if isinstance(v, complex):
+            return {'type': 'Complex', 'real': v.real, 'imag': v.imag}
+        if isinstance(v, bytes):
+            return {'type': 'Bytes', 'value': v.decode('utf-8', errors='replace')}
+        if isinstance(v, tuple):
+            return {'type': 'Tuple', 'values': [serialize_value(i, depth+1) for i in v]}
         if isinstance(v, list):
-            # Detect Matrix (2D Array)
-            if len(v) > 0 and all(isinstance(row, list) for row in v):
-                return {'type': 'Matrix', 'data': [[serialize_value(item) for item in row] for row in v]}
-            return [serialize_value(i) for i in v]
+            items = v[:150]
+            if items and all(isinstance(row, list) for row in items):
+                return {'type': 'Matrix', 'data': [[serialize_value(c, depth+1) for c in row] for row in items]}
+            return [serialize_value(i, depth+1) for i in items]
+        if isinstance(v, (set, frozenset)):
+            try:
+                vals = sorted(v, key=lambda x: (str(type(x).__name__), str(x)))
+            except Exception:
+                vals = list(v)
+            return {'type': 'Set', 'values': [serialize_value(i, depth+1) for i in vals]}
+        import collections as _col
+        if isinstance(v, _col.deque):
+            return {'type': 'Deque', 'values': [serialize_value(i, depth+1) for i in v]}
+        if isinstance(v, _col.Counter):
+            return {'type': 'Counter', 'data': {str(k): int(cnt) for k, cnt in v.most_common()}}
         if isinstance(v, dict):
-            return {str(k): serialize_value(val) for k, val in v.items()}
-        if isinstance(v, set):
-            return {'type': 'Set', 'values': list(serialize_value(i) for i in v)}
-        if hasattr(v, 'val') and hasattr(v, 'next'):
+            return {str(k): serialize_value(val, depth+1) for k, val in list(v.items())[:100]}
+        if hasattr(v, 'val') and hasattr(v, 'next') and not hasattr(v, 'left'):
             return serialize_linked_list(v)
         if hasattr(v, 'val') and hasattr(v, 'left') and hasattr(v, 'right'):
             return serialize_tree(v)
-        return str(v)
+        try:
+            return str(v)
+        except Exception:
+            return '<unserializable>'
 
     def serialize_linked_list(node):
         nodes = []
@@ -82,131 +56,230 @@ def trace_execution(code, entry_point, args_input):
         while curr and id(curr) not in visited:
             visited.add(id(curr))
             nodes.append({
-                'id': id(curr),
+                'id': str(id(curr)),
                 'val': serialize_value(curr.val),
-                'next': id(curr.next) if curr.next else None
+                'next': str(id(curr.next)) if curr.next else None
             })
             curr = curr.next
-        return {'type': 'LinkedList', 'nodes': nodes, 'head': id(node)}
+        return {'type': 'LinkedList', 'nodes': nodes, 'head': str(id(node)) if node else None}
 
     def serialize_tree(node):
-        if not node:
+        if node is None:
             return None
         return {
             'type': 'TreeNode',
             'val': serialize_value(node.val),
             'left': serialize_tree(node.left),
             'right': serialize_tree(node.right),
-            'id': id(node)
+            'id': str(id(node))
         }
+
+    # --- Tracer callback ---
+
+    def tracer(frame, event, arg):
+        if event not in ('line', 'return', 'call'):
+            return tracer
+        if frame.f_code.co_filename != '<string>':
+            return tracer
+
+        line_no = frame.f_lineno
+
+        call_stack = []
+        cur = frame
+        while cur:
+            if cur.f_code.co_filename == '<string>' and cur.f_code.co_name != '<module>':
+                flocs = {}
+                for k, v in cur.f_locals.items():
+                    if k.startswith('__') or k in ('self', '__ca'):
+                        continue
+                    try:
+                        flocs[k] = serialize_value(v)
+                    except Exception:
+                        flocs[k] = repr(v)[:200]
+                call_stack.append({'name': cur.f_code.co_name, 'locals': flocs, 'line': cur.f_lineno})
+            cur = cur.f_back
+        call_stack.reverse()
+
+        local_vars = {}
+        for k, v in frame.f_locals.items():
+            if k.startswith('__') or k in ('self', '__ca'):
+                continue
+            try:
+                local_vars[k] = serialize_value(v)
+            except Exception:
+                local_vars[k] = repr(v)[:200]
+
+        changed = []
+        for k, v in local_vars.items():
+            if k not in prev_snap:
+                changed.append(k)
+            else:
+                try:
+                    if json.dumps(prev_snap[k], default=str, sort_keys=True) != json.dumps(v, default=str, sort_keys=True):
+                        changed.append(k)
+                except Exception:
+                    if str(prev_snap[k]) != str(v):
+                        changed.append(k)
+        prev_snap.clear()
+        prev_snap.update(local_vars)
+
+        ret_val = None
+        if event == 'return':
+            try:
+                ret_val = serialize_value(arg)
+            except Exception:
+                ret_val = str(arg)
+
+        snapshots.append({
+            'line': line_no,
+            'locals': local_vars,
+            'callStack': call_stack,
+            'event': event,
+            'returnValue': ret_val,
+            'changedVars': changed,
+            'depth': len(call_stack)
+        })
+        return tracer
+
+    # --- Execution environment ---
 
     exec_globals = {}
     try:
-        # Import common modules for LeetCode
-        import collections
-        import heapq
-        import math
-        import bisect
-        from typing import List, Dict, Set, Optional, Union, Any, Tuple, Deque, Counter
-        
+        import collections, heapq, math, bisect, functools, itertools
+        import string as _str_mod, re as _re_mod, operator as _op_mod
+        from typing import List, Dict, Set, Optional, Union, Any, Tuple
+
         exec_globals.update({
-            'collections': collections,
-            'heapq': heapq,
-            'math': math,
-            'bisect': bisect,
-            'List': List,
-            'Dict': Dict,
-            'Set': Set,
-            'Optional': Optional,
-            'Union': Union,
-            'Any': Any,
-            'Tuple': Tuple,
-            'Deque': Deque,
-            'Counter': Counter,
-            'deque': collections.deque,
-            'defaultdict': collections.defaultdict,
-            'Counter': collections.Counter
+            '__builtins__': __builtins__,
+            'collections': collections, 'heapq': heapq, 'math': math, 'bisect': bisect,
+            'functools': functools, 'itertools': itertools,
+            're': _re_mod, 'string': _str_mod, 'operator': _op_mod,
+            'List': List, 'Dict': Dict, 'Set': Set, 'Optional': Optional,
+            'Union': Union, 'Any': Any, 'Tuple': Tuple,
+            'deque': collections.deque, 'defaultdict': collections.defaultdict,
+            'Counter': collections.Counter, 'OrderedDict': collections.OrderedDict,
+            'inf': float('inf'), 'MOD': 10**9 + 7, 'INF': float('inf'),
         })
 
-        # Define common LeetCode classes
         class ListNode:
             def __init__(self, val=0, next=None):
                 self.val = val
                 self.next = next
-        
+            def __repr__(self):
+                return f'ListNode({self.val})'
+
         class TreeNode:
             def __init__(self, val=0, left=None, right=None):
                 self.val = val
                 self.left = left
                 self.right = right
-                
-        exec_globals['ListNode'] = ListNode
-        exec_globals['TreeNode'] = TreeNode
-        
-        # Execute user code
-        exec(code, exec_globals)
-        
-        # Handle "class Solution" vs standalone function
-        func = exec_globals.get(entry_point)
-        
-        if not func and 'Solution' in exec_globals:
-            sol_class = exec_globals['Solution']
-            method_name = entry_point
-            # List all methods defined in the class (excluding inherited/special ones)
-            class_methods = [m for m, f in sol_class.__dict__.items() if callable(f) and not m.startswith('__')]
-            
-            if method_name not in class_methods:
-                if class_methods:
-                    method_name = class_methods[0]
-            
-            sol_instance = sol_class()
-            func = getattr(sol_instance, method_name, None)
-            
-        if not func:
-            return {'error': f"Function '{entry_point}' not found in code."}
+            def __repr__(self):
+                return f'TreeNode({self.val})'
 
-        # Parse arguments
-        args = []
-        kwargs = {}
-        
-        if args_input:
-            import re
-            # Clean up the input string to be a valid Python expression list
-            # We want to support "nums=[1,2], k=3" by turning it into a call or eval
-            
-            # Simple approach: If it looks like assignments, we can use a helper function to capture them
-            # We'll wrap the input in a function call to capture positional and keyword args
+        def make_list(arr):
+            """Build a LinkedList from a Python list."""
+            if not arr:
+                return None
+            head = ListNode(arr[0])
+            cur = head
+            for v in arr[1:]:
+                cur.next = ListNode(None if v is None else v)
+                cur = cur.next
+            return head
+
+        def make_tree(arr):
+            """Build a binary tree from LeetCode BFS array format (None = missing node)."""
+            if not arr or arr[0] is None:
+                return None
+            root = TreeNode(arr[0])
+            q = [root]
+            i = 1
+            while q and i < len(arr):
+                node = q.pop(0)
+                if i < len(arr) and arr[i] is not None:
+                    node.left = TreeNode(arr[i])
+                    q.append(node.left)
+                i += 1
+                if i < len(arr) and arr[i] is not None:
+                    node.right = TreeNode(arr[i])
+                    q.append(node.right)
+                i += 1
+            return root
+
+        exec_globals.update({
+            'ListNode': ListNode, 'TreeNode': TreeNode,
+            'make_list': make_list, 'make_tree': make_tree,
+        })
+
+        exec(code, exec_globals)
+
+        # --- Find entry function ---
+        func = None
+        resolved_name = entry_point
+
+        if 'Solution' in exec_globals:
+            sol_cls = exec_globals['Solution']
+            methods = [m for m in sol_cls.__dict__ if callable(sol_cls.__dict__[m]) and not m.startswith('__')]
+            target = entry_point if entry_point in methods else (methods[0] if methods else None)
+            if target:
+                func = getattr(sol_cls(), target)
+                resolved_name = target
+
+        if func is None:
+            func = exec_globals.get(entry_point)
+
+        if func is None:
+            skip = {'ListNode', 'TreeNode', 'make_list', 'make_tree', 'Solution'}
+            for name, obj in exec_globals.items():
+                if callable(obj) and not name.startswith('__') and name not in skip and not isinstance(obj, type):
+                    func = obj
+                    resolved_name = name
+                    break
+
+        if func is None:
+            return json.dumps({'error': 'No callable function found. Define a function or a Solution class with at least one method.'})
+
+        # --- Parse arguments ---
+        args, kwargs = [], {}
+        raw = (args_input or '').strip()
+        if raw:
+            # Normalize JSON-style literals to Python
+            py_raw = raw.replace('null', 'None').replace('true', 'True').replace('false', 'False')
             try:
-                # We create a wrapper that just returns its arguments
-                exec("def __capture_args(*a, **k): return a, k", exec_globals)
-                # Then we call it with the user's input string
-                capture_code = f"__capture_args({args_input})"
-                args, kwargs = eval(capture_code, exec_globals)
-            except Exception as e:
-                # Fallback to JSON if it's a simple list
+                exec('def __ca(*a, **k): return a, k', exec_globals)
+                a, k = eval(f'__ca({py_raw})', exec_globals)
+                args, kwargs = list(a), dict(k)
+            except Exception as e1:
                 try:
-                    import json
-                    parsed = json.loads(args_input)
-                    if isinstance(parsed, list):
-                        args = parsed
-                    else:
-                        args = [parsed]
-                except:
-                    return {'error': f"Failed to parse arguments: {str(e)}"}
-        
+                    parsed = json.loads(raw)
+                    args = parsed if isinstance(parsed, list) else [parsed]
+                except Exception as e2:
+                    return json.dumps({
+                        'error': f'Could not parse arguments.\\n\\nPython eval error: {e1}\\nJSON parse error: {e2}\\n\\nTips:\\n  - Python style: [1,2,3], target=9\\n  - JSON style: [[1,2,3], 9]\\n  - Use make_list([1,2,3]) for LinkedList input\\n  - Use make_tree([1,null,2]) for TreeNode input'
+                    })
+
+        # --- Execute with tracing ---
         sys.settrace(tracer)
+        ret = None
+        exec_err = None
         try:
-            func(*args, **kwargs)
-        except TypeError as e:
-            # Fallback for common argument mismatch issues
-            if "positional argument" in str(e) or "given" in str(e):
-                func(args)
-            else:
-                raise e
+            ret = func(*args, **kwargs)
+        except Exception:
+            exec_err = traceback.format_exc()
         finally:
             sys.settrace(None)
-            
-        return {'snapshots': snapshots}
+
+        out = {'snapshots': snapshots, 'resolvedName': resolved_name}
+        if ret is not None:
+            try:
+                out['result'] = serialize_value(ret)
+            except Exception:
+                out['result'] = str(ret)
+        if exec_err:
+            out['execError'] = exec_err
+
+        return json.dumps(out, default=str)
+
     except Exception:
-        return {'error': traceback.format_exc(), 'snapshots': snapshots}
+        return json.dumps({'error': traceback.format_exc(), 'snapshots': snapshots}, default=str)
 `;

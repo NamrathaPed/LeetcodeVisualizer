@@ -2,101 +2,200 @@ import React from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { CornerDownRight } from 'lucide-react';
 
-interface ArrayVisualizerProps {
+// ─── Helpers ────────────────────────────────────────────────────────────────
+
+function renderPrimitive(val: any): string {
+  if (val === null || val === undefined) return 'None';
+  if (typeof val === 'boolean') return val ? 'True' : 'False';
+  if (typeof val === 'string') return `"${val}"`;
+  if (Array.isArray(val)) return `[${val.slice(0, 6).map(renderPrimitive).join(', ')}${val.length > 6 ? ', …' : ''}]`;
+  if (typeof val === 'object' && val.type) return `<${val.type}>`;
+  return String(val);
+}
+
+const CELL = {
+  width: '48px', height: '48px',
+  display: 'flex', alignItems: 'center', justifyContent: 'center',
+  border: '2px solid', borderRadius: '8px',
+  position: 'relative' as const, flexShrink: 0,
+  fontSize: '0.9rem', fontWeight: 600,
+};
+
+// ─── Array Visualizer ────────────────────────────────────────────────────────
+
+export const ArrayVisualizer: React.FC<{
   data: any[];
   label: string;
   pointers?: Record<string, number>;
-}
+  changedIndices?: number[];
+}> = ({ data, label, pointers = {}, changedIndices = [] }) => {
+  // Filter to only in-bounds pointers
+  const validPtrs = Object.fromEntries(
+    Object.entries(pointers).filter(([, v]) => v >= 0 && v < data.length)
+  );
 
-export const ArrayVisualizer: React.FC<ArrayVisualizerProps> = ({ data, label, pointers = {} }) => {
   return (
-    <div className="data-structure-container" style={{ marginBottom: '20px', marginTop: '10px' }}>
+    <div className="data-structure-container">
       <span className="ds-title">{label}</span>
-      <div style={{ display: 'flex', gap: '8px', overflowX: 'auto', padding: '35px 0 25px 0' }}>
-        {data.map((val, idx) => (
+      <div style={{ display: 'flex', gap: '6px', overflowX: 'auto', padding: '38px 4px 28px 4px' }}>
+        {data.map((val, idx) => {
+          const ptrsHere = Object.entries(validPtrs).filter(([, v]) => v === idx);
+          const isChanged = changedIndices.includes(idx);
+          return (
             <motion.div
               key={idx}
               layout
               initial={{ scale: 0.8, opacity: 0 }}
-              animate={{ 
-                scale: 1, 
-                opacity: 1,
-                backgroundColor: 'var(--surface-color-hover)',
-                borderColor: 'var(--border-color)'
+              animate={{
+                scale: 1, opacity: 1,
+                backgroundColor: isChanged ? 'rgba(16,185,129,0.12)' : 'var(--surface-color-hover)',
+                borderColor: ptrsHere.length ? 'var(--primary-color)' : isChanged ? 'var(--accent-color)' : 'var(--border-color)',
               }}
-              style={{
-                width: '48px',
-                height: '48px',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                border: '2px solid',
-                borderRadius: '8px',
-                position: 'relative',
-                flexShrink: 0,
-                fontSize: '0.9rem',
-                fontWeight: 600
-              }}
+              style={CELL}
             >
-              {val !== null ? val.toString() : 'null'}
-              <div style={{ 
-                position: 'absolute', 
-                bottom: '-20px', 
-                fontSize: '0.7rem', 
-                color: 'var(--text-secondary)' 
-              }}>
+              {val !== null && val !== undefined ? String(val) : 'null'}
+              {/* Index label */}
+              <div style={{ position: 'absolute', bottom: '-22px', fontSize: '0.65rem', color: 'var(--text-secondary)' }}>
                 {idx}
               </div>
-              
-              {/* Pointers rendering */}
-              <div style={{ position: 'absolute', top: '-25px', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '2px' }}>
-                {Object.entries(pointers).map(([pName, pIdx]) => {
-                  if (pIdx === idx) {
-                    return (
-                      <motion.div 
-                        layoutId={`ptr-${pName}`}
-                        key={pName} 
-                        style={{ fontSize: '0.65rem', color: 'var(--primary-color)', fontWeight: 700, background: 'rgba(59, 130, 246, 0.1)', padding: '2px 4px', borderRadius: '4px' }}
-                      >
-                        {pName} ↓
-                      </motion.div>
-                    );
-                  }
-                  return null;
-                })}
-              </div>
+              {/* Pointer labels */}
+              {ptrsHere.length > 0 && (
+                <div style={{ position: 'absolute', top: '-32px', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '2px' }}>
+                  {ptrsHere.map(([pName, pVal]) => (
+                    <motion.div
+                      layoutId={`ptr-${pName}`}
+                      key={pName}
+                      style={{ fontSize: '0.65rem', color: 'var(--primary-color)', fontWeight: 700, background: 'rgba(59,130,246,0.15)', padding: '2px 5px', borderRadius: '4px', whiteSpace: 'nowrap' }}
+                    >
+                      {pName}={pVal} ↓
+                    </motion.div>
+                  ))}
+                </div>
+              )}
             </motion.div>
-        ))}
+          );
+        })}
       </div>
     </div>
   );
 };
 
-interface VariableVisualizerProps {
-  variables: Record<string, any>;
-}
+// ─── Tuple Visualizer ────────────────────────────────────────────────────────
 
-export const VariableVisualizer: React.FC<VariableVisualizerProps> = ({ variables }) => {
+export const TupleVisualizer: React.FC<{ data: any[]; label: string }> = ({ data, label }) => (
+  <div className="data-structure-container">
+    <span className="ds-title">{label} <span style={{ opacity: 0.6, fontSize: '0.7rem' }}>(tuple)</span></span>
+    <div style={{ display: 'flex', alignItems: 'center', gap: '6px', overflowX: 'auto', padding: '20px 4px 10px 4px' }}>
+      <span style={{ color: 'var(--text-secondary)', fontSize: '1.3rem', lineHeight: 1 }}>(</span>
+      {data.map((val, idx) => (
+        <React.Fragment key={idx}>
+          <div style={{ ...CELL, width: 'auto', minWidth: '44px', padding: '0 8px', borderStyle: 'dashed', borderColor: 'var(--border-color)', color: 'var(--text-secondary)' }}>
+            {val !== null && val !== undefined ? String(val) : 'None'}
+          </div>
+          {idx < data.length - 1 && <span style={{ color: 'var(--text-secondary)', fontSize: '1rem' }}>,</span>}
+        </React.Fragment>
+      ))}
+      <span style={{ color: 'var(--text-secondary)', fontSize: '1.3rem', lineHeight: 1 }}>)</span>
+    </div>
+  </div>
+);
+
+// ─── Deque Visualizer ────────────────────────────────────────────────────────
+
+export const DequeVisualizer: React.FC<{ data: any[]; label: string }> = ({ data, label }) => (
+  <div className="data-structure-container">
+    <span className="ds-title">{label} <span style={{ opacity: 0.6, fontSize: '0.7rem' }}>(deque)</span></span>
+    <div style={{ display: 'flex', alignItems: 'center', gap: '6px', overflowX: 'auto', padding: '20px 4px 10px 4px' }}>
+      <span style={{ color: 'var(--secondary-color)', fontSize: '1.2rem', fontWeight: 700 }}>⇐</span>
+      {data.length === 0
+        ? <span style={{ color: 'var(--text-secondary)', fontStyle: 'italic', fontSize: '0.85rem' }}>empty</span>
+        : data.map((val, idx) => (
+          <motion.div
+            key={idx}
+            layout
+            initial={{ scale: 0.8, opacity: 0 }}
+            animate={{ scale: 1, opacity: 1 }}
+            style={{
+              ...CELL,
+              width: 'auto', minWidth: '44px', padding: '0 8px',
+              borderColor: idx === 0 ? 'var(--secondary-color)' : idx === data.length - 1 ? 'var(--accent-color)' : 'var(--border-color)',
+              backgroundColor: idx === 0 ? 'rgba(168,85,247,0.08)' : idx === data.length - 1 ? 'rgba(16,185,129,0.08)' : 'var(--surface-color-hover)',
+            }}
+          >
+            {val !== null && val !== undefined ? String(val) : 'None'}
+          </motion.div>
+        ))
+      }
+      <span style={{ color: 'var(--accent-color)', fontSize: '1.2rem', fontWeight: 700 }}>⇒</span>
+    </div>
+    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.65rem', color: 'var(--text-secondary)', paddingTop: '2px' }}>
+      <span style={{ color: 'var(--secondary-color)' }}>popleft / appendleft</span>
+      <span style={{ color: 'var(--accent-color)' }}>append / pop</span>
+    </div>
+  </div>
+);
+
+// ─── Counter Visualizer ──────────────────────────────────────────────────────
+
+export const CounterVisualizer: React.FC<{ data: Record<string, number>; label: string }> = ({ data, label }) => {
+  const entries = Object.entries(data);
+  const maxCount = Math.max(...entries.map(([, v]) => v), 1);
   return (
-    <div className="data-structure-container" style={{ gridColumn: 'span 2' }}>
+    <div className="data-structure-container">
+      <span className="ds-title">{label} <span style={{ opacity: 0.6, fontSize: '0.7rem' }}>(Counter)</span></span>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', padding: '10px 0' }}>
+        {entries.length === 0
+          ? <span style={{ color: 'var(--text-secondary)', fontStyle: 'italic', fontSize: '0.85rem' }}>empty</span>
+          : entries.map(([key, count]) => (
+            <motion.div key={key} layout initial={{ x: -10, opacity: 0 }} animate={{ x: 0, opacity: 1 }}
+              style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+              <span style={{ minWidth: '60px', fontWeight: 600, color: 'var(--secondary-color)', fontSize: '0.9rem' }}>{key}</span>
+              <div style={{ flex: 1, height: '20px', background: 'var(--surface-color-hover)', borderRadius: '4px', overflow: 'hidden' }}>
+                <motion.div
+                  initial={{ width: 0 }}
+                  animate={{ width: `${(count / maxCount) * 100}%` }}
+                  style={{ height: '100%', background: 'linear-gradient(90deg, var(--primary-color), var(--secondary-color))', borderRadius: '4px' }}
+                />
+              </div>
+              <span style={{ minWidth: '30px', textAlign: 'right', fontSize: '0.9rem', color: 'var(--text-primary)', fontWeight: 600 }}>{count}</span>
+            </motion.div>
+          ))
+        }
+      </div>
+    </div>
+  );
+};
+
+// ─── Variable Visualizer ─────────────────────────────────────────────────────
+
+export const VariableVisualizer: React.FC<{
+  variables: Record<string, any>;
+  changedVars?: string[];
+}> = ({ variables, changedVars = [] }) => {
+  const prims = Object.entries(variables).filter(([, v]) =>
+    v === null || ['string', 'number', 'boolean'].includes(typeof v)
+  );
+  if (!prims.length) return null;
+
+  return (
+    <div className="data-structure-container">
       <span className="ds-title">Variables</span>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))', gap: '16px' }}>
-        {Object.entries(variables).map(([name, value]) => {
-          // Only show primitives (strings, numbers, booleans, null/None)
-          const isPrimitive = value === null || ['string', 'number', 'boolean'].includes(typeof value);
-          if (!isPrimitive) return null;
-          
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(120px, 1fr))', gap: '14px', padding: '4px 0' }}>
+        {prims.map(([name, value]) => {
+          const changed = changedVars.includes(name);
           return (
-            <div key={name} style={{ display: 'flex', flexDirection: 'column' }}>
-              <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>{name}</span>
-              <motion.span 
+            <div key={name} style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}>
+              <span style={{ fontSize: '0.72rem', color: changed ? 'var(--accent-color)' : 'var(--text-secondary)', fontWeight: changed ? 700 : 400 }}>
+                {name}{changed ? ' ✦' : ''}
+              </span>
+              <motion.span
                 key={`${name}-${value}`}
-                initial={{ color: 'var(--accent-color)', scale: 1.2, textShadow: '0 0 8px var(--accent-color)' }}
-                animate={{ color: 'var(--text-primary)', scale: 1, textShadow: '0 0 0px transparent' }}
-                transition={{ duration: 0.4 }}
-                style={{ fontSize: '1.1rem', fontWeight: 600, display: 'inline-block' }}
+                initial={{ color: 'var(--accent-color)', scale: 1.15 }}
+                animate={{ color: 'var(--text-primary)', scale: 1 }}
+                transition={{ duration: 0.35 }}
+                style={{ fontSize: '1.05rem', fontWeight: 700, display: 'inline-block', fontFamily: 'var(--font-mono)' }}
               >
-                {value === null ? 'None' : String(value)}
+                {value === null ? 'None' : typeof value === 'boolean' ? (value ? 'True' : 'False') : String(value)}
               </motion.span>
             </div>
           );
@@ -106,285 +205,242 @@ export const VariableVisualizer: React.FC<VariableVisualizerProps> = ({ variable
   );
 };
 
+// ─── Map Visualizer ──────────────────────────────────────────────────────────
+
 export const MapVisualizer: React.FC<{ data: Record<string, any>; label: string }> = ({ data, label }) => {
+  const entries = Object.entries(data);
   return (
     <div className="data-structure-container">
       <span className="ds-title">{label}</span>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-        {Object.entries(data).length === 0 ? (
-           <span style={{ color: 'var(--text-secondary)', fontSize: '0.85rem', fontStyle: 'italic', padding: '8px' }}>empty map</span>
-        ) : (
-          Object.entries(data).map(([key, val]) => (
-            <motion.div 
-              layout
-              key={key} 
-              initial={{ x: -10, opacity: 0 }}
-              animate={{ x: 0, opacity: 1 }}
-              style={{ 
-                display: 'flex', 
-                justifyContent: 'space-between', 
-                padding: '8px 12px', 
-                background: 'rgba(255,255,255,0.03)', 
-                border: '1px solid var(--border-color)',
-                borderRadius: '6px' 
-              }}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', maxHeight: '260px', overflowY: 'auto' }}>
+        {entries.length === 0
+          ? <span style={{ color: 'var(--text-secondary)', fontStyle: 'italic', fontSize: '0.85rem', padding: '8px' }}>empty</span>
+          : entries.map(([key, val]) => (
+            <motion.div
+              layout key={key}
+              initial={{ x: -10, opacity: 0 }} animate={{ x: 0, opacity: 1 }}
+              style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '7px 12px', background: 'rgba(255,255,255,0.03)', border: '1px solid var(--border-color)', borderRadius: '6px', gap: '12px' }}
             >
-              <span style={{ color: 'var(--secondary-color)', fontWeight: 600 }}>{key}</span>
-              <span style={{ color: 'var(--text-primary)' }}>{JSON.stringify(val)}</span>
+              <span style={{ color: 'var(--secondary-color)', fontWeight: 600, flexShrink: 0, fontFamily: 'var(--font-mono)', fontSize: '0.9rem' }}>{key}</span>
+              <span style={{ color: 'var(--text-primary)', fontFamily: 'var(--font-mono)', fontSize: '0.85rem', wordBreak: 'break-all' }}>{renderPrimitive(val)}</span>
             </motion.div>
           ))
-        )}
+        }
+      </div>
+      {entries.length > 0 && (
+        <div style={{ fontSize: '0.7rem', color: 'var(--text-secondary)', marginTop: '8px', textAlign: 'right' }}>
+          {entries.length} {entries.length === 1 ? 'entry' : 'entries'}
+        </div>
+      )}
+    </div>
+  );
+};
+
+// ─── Set Visualizer ──────────────────────────────────────────────────────────
+
+export const SetVisualizer: React.FC<{ data: any[]; label: string }> = ({ data, label }) => (
+  <div className="data-structure-container">
+    <span className="ds-title">{label} <span style={{ opacity: 0.6, fontSize: '0.7rem' }}>(set)</span></span>
+    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '10px', padding: '10px 0' }}>
+      {data.length === 0
+        ? <span style={{ color: 'var(--text-secondary)', fontStyle: 'italic', fontSize: '0.85rem' }}>∅ empty set</span>
+        : data.map((val, i) => (
+          <motion.div
+            key={`${val}-${i}`} layout
+            initial={{ scale: 0, opacity: 0 }} animate={{ scale: 1, opacity: 1 }}
+            style={{ padding: '6px 14px', background: 'rgba(168,85,247,0.1)', border: '1px solid var(--secondary-color)', borderRadius: '20px', fontSize: '0.88rem', color: 'var(--text-primary)', fontWeight: 500, fontFamily: 'var(--font-mono)' }}
+          >
+            {String(val)}
+          </motion.div>
+        ))
+      }
+    </div>
+  </div>
+);
+
+// ─── Matrix Visualizer ───────────────────────────────────────────────────────
+
+export const MatrixVisualizer: React.FC<{
+  data: any[][];
+  label: string;
+  pointers?: Record<string, number[]>;
+}> = ({ data, label, pointers = {} }) => (
+  <div className="data-structure-container" style={{ display: 'inline-block', minWidth: '100%' }}>
+    <span className="ds-title">{label}</span>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', padding: '24px 0 14px 0', overflowX: 'auto' }}>
+      {data.map((row, rIdx) => (
+        <div key={rIdx} style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
+          <div style={{ width: '22px', textAlign: 'center', fontSize: '0.6rem', color: 'var(--text-secondary)', flexShrink: 0 }}>{rIdx}</div>
+          {row.map((cell, cIdx) => {
+            const active = Object.entries(pointers).filter(([, coords]) => coords[0] === rIdx && coords[1] === cIdx);
+            return (
+              <motion.div
+                key={`${rIdx}-${cIdx}`} layout
+                style={{ width: '40px', height: '40px', display: 'flex', alignItems: 'center', justifyContent: 'center', background: active.length ? 'rgba(59,130,246,0.2)' : 'var(--surface-color-hover)', border: `1px solid ${active.length ? 'var(--primary-color)' : 'var(--border-color)'}`, borderRadius: '6px', fontSize: '0.82rem', position: 'relative', flexShrink: 0 }}
+              >
+                {cell !== null ? String(cell) : ''}
+                {active.length > 0 && (
+                  <div style={{ position: 'absolute', top: '-17px', right: '-8px', display: 'flex', gap: '2px', zIndex: 10 }}>
+                    {active.map(([pName]) => (
+                      <span key={pName} style={{ fontSize: '0.55rem', background: 'var(--primary-color)', color: '#fff', padding: '1px 3px', borderRadius: '3px', fontWeight: 700 }}>{pName}</span>
+                    ))}
+                  </div>
+                )}
+              </motion.div>
+            );
+          })}
+        </div>
+      ))}
+      <div style={{ display: 'flex', gap: '4px', marginLeft: '26px', marginTop: '4px' }}>
+        {(data[0] ?? []).map((_, cIdx) => (
+          <div key={cIdx} style={{ width: '40px', textAlign: 'center', fontSize: '0.6rem', color: 'var(--text-secondary)' }}>{cIdx}</div>
+        ))}
+      </div>
+    </div>
+  </div>
+);
+
+// ─── Linked List Visualizer ──────────────────────────────────────────────────
+
+export const LinkedListVisualizer: React.FC<{ data: any; label: string }> = ({ data, label }) => {
+  if (!data || data.type !== 'LinkedList') return null;
+  return (
+    <div className="data-structure-container">
+      <span className="ds-title">{label}</span>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '12px', overflowX: 'auto', padding: '24px 4px 12px 4px' }}>
+        {data.nodes.map((node: any, idx: number) => (
+          <React.Fragment key={node.id}>
+            <motion.div
+              layoutId={`ll-${node.id}`}
+              style={{ width: '52px', height: '52px', borderRadius: '50%', border: `2px solid ${idx === 0 ? 'var(--accent-color)' : 'var(--primary-color)'}`, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--surface-color)', flexShrink: 0, position: 'relative', fontWeight: 700, fontSize: '0.95rem' }}
+            >
+              {node.val !== null ? String(node.val) : 'null'}
+              {idx === 0 && <span style={{ position: 'absolute', top: '-22px', fontSize: '0.6rem', color: 'var(--accent-color)', fontWeight: 700 }}>HEAD</span>}
+            </motion.div>
+            {idx < data.nodes.length - 1 && (
+              <span style={{ color: 'var(--border-color)', fontSize: '1.4rem' }}>→</span>
+            )}
+          </React.Fragment>
+        ))}
+        <span style={{ color: 'var(--text-secondary)', fontSize: '0.78rem', fontStyle: 'italic', marginLeft: '4px' }}>NULL</span>
       </div>
     </div>
   );
 };
 
+// ─── Tree Visualizer ─────────────────────────────────────────────────────────
+
+function buildLayout(node: any): Map<string, { x: number; y: number }> {
+  const positions = new Map<string, { x: number; y: number }>();
+  let counter = 0;
+  const H = 64, V = 72;
+
+  function inorder(n: any, depth: number) {
+    if (!n) return;
+    inorder(n.left, depth + 1);
+    positions.set(String(n.id), { x: counter * H + H / 2, y: depth * V + 32 });
+    counter++;
+    inorder(n.right, depth + 1);
+  }
+  inorder(node, 0);
+  return positions;
+}
+
+function renderTreeNodes(node: any, positions: Map<string, { x: number; y: number }>): React.ReactNode {
+  if (!node) return null;
+  const pos = positions.get(String(node.id));
+  if (!pos) return null;
+
+  const leftPos  = node.left  ? positions.get(String(node.left.id))  : null;
+  const rightPos = node.right ? positions.get(String(node.right.id)) : null;
+
+  return (
+    <g key={node.id}>
+      {leftPos  && <line x1={pos.x} y1={pos.y} x2={leftPos.x}  y2={leftPos.y}  stroke="var(--border-color)" strokeWidth="2" />}
+      {rightPos && <line x1={pos.x} y1={pos.y} x2={rightPos.x} y2={rightPos.y} stroke="var(--border-color)" strokeWidth="2" />}
+      {renderTreeNodes(node.left,  positions)}
+      {renderTreeNodes(node.right, positions)}
+      <circle cx={pos.x} cy={pos.y} r="20" fill="var(--surface-color)" stroke="var(--primary-color)" strokeWidth="2" />
+      <text x={pos.x} y={pos.y + 5} textAnchor="middle" fill="var(--text-primary)" fontSize="12px" fontWeight="bold">
+        {String(node.val)}
+      </text>
+    </g>
+  );
+}
+
 export const TreeVisualizer: React.FC<{ data: any; label: string }> = ({ data, label }) => {
   if (!data || data.type !== 'TreeNode') return null;
 
-  const renderNode = (node: any, x: number, y: number, offset: number): React.ReactNode => {
-    if (!node) return null;
-    return (
-      <g key={node.id}>
-        {node.left && (
-          <>
-            <line 
-              x1={x} y1={y} x2={x - offset} y2={y + 60} 
-              stroke="var(--border-color)" strokeWidth="2" 
-            />
-            {renderNode(node.left, x - offset, y + 60, offset / 1.8)}
-          </>
-        )}
-        {node.right && (
-          <>
-            <line 
-              x1={x} y1={y} x2={x + offset} y2={y + 60} 
-              stroke="var(--border-color)" strokeWidth="2" 
-            />
-            {renderNode(node.right, x + offset, y + 60, offset / 1.8)}
-          </>
-        )}
-        <motion.circle
-          layoutId={`node-${node.id}`}
-          cx={x} cy={y} r="18"
-          fill="var(--surface-color)"
-          stroke="var(--primary-color)"
-          strokeWidth="2"
-        />
-        <text
-          x={x} y={y + 5}
-          textAnchor="middle"
-          fill="var(--text-primary)"
-          fontSize="12px"
-          fontWeight="bold"
-        >
-          {node.val}
-        </text>
-      </g>
-    );
-  };
+  const positions = buildLayout(data);
+  const xs = Array.from(positions.values()).map(p => p.x);
+  const ys = Array.from(positions.values()).map(p => p.y);
+  const svgW = Math.max(...xs) + 50;
+  const svgH = Math.max(...ys) + 50;
 
   return (
-    <div className="data-structure-container" style={{ minHeight: "300px" }}>
+    <div className="data-structure-container" style={{ overflowX: 'auto' }}>
       <span className="ds-title">{label}</span>
-      <svg width="100%" height="300" viewBox="0 0 800 300">
-        {renderNode(data, 400, 40, 120)}
+      <svg width={svgW} height={svgH} style={{ minWidth: '100%' }}>
+        {renderTreeNodes(data, positions)}
       </svg>
     </div>
   );
 };
 
-export const LinkedListVisualizer: React.FC<{ data: any; label: string }> = ({ data, label }) => {
-  if (!data || data.type !== 'LinkedList') return null;
-
-  return (
-    <div className="data-structure-container">
-      <span className="ds-title">{label}</span>
-      <div style={{ display: 'flex', alignItems: 'center', gap: '20px', overflowX: 'auto', padding: '20px 0' }}>
-        {data.nodes.map((node: any, idx: number) => (
-          <React.Fragment key={node.id}>
-            <motion.div
-              layoutId={`ll-node-${node.id}`}
-              style={{
-                width: '50px',
-                height: '50px',
-                borderRadius: '50%',
-                border: '2px solid var(--accent-color)',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                background: 'var(--surface-color)',
-                flexShrink: 0,
-                position: 'relative'
-              }}
-            >
-              {node.val}
-              {idx === 0 && <span style={{ position: 'absolute', top: '-25px', fontSize: '0.6rem', color: 'var(--accent-color)' }}>HEAD</span>}
-            </motion.div>
-            {idx < data.nodes.length - 1 && (
-              <div style={{ color: 'var(--border-color)', fontSize: '24px' }}>→</div>
-            )}
-          </React.Fragment>
-        ))}
-        {!data.nodes[data.nodes.length - 1]?.next && (
-           <div style={{ color: 'var(--text-secondary)', fontSize: '0.8rem', fontStyle: 'italic' }}>NULL</div>
-        )}
-      </div>
-    </div>
-  );
-};
-
-export const ReturnedValueVisualizer: React.FC<{ value: any }> = ({ value }) => {
-  if (value === undefined || value === null) return null;
-  return (
-    <div className="data-structure-container" style={{ border: '2px solid var(--accent-color)', background: 'rgba(16, 185, 129, 0.05)' }}>
-      <span className="ds-title" style={{ color: 'var(--accent-color)' }}>Returned Value</span>
-      <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-        <CornerDownRight size={24} color="var(--accent-color)" />
-        <span style={{ fontSize: '1.5rem', fontWeight: 700, color: 'var(--text-primary)' }}>
-          {JSON.stringify(value)}
-        </span>
-      </div>
-    </div>
-  );
-};
-
-export const MatrixVisualizer: React.FC<{ data: any[][]; label: string; pointers?: Record<string, number[]> }> = ({ data, label, pointers = {} }) => {
-  return (
-    <div className="data-structure-container" style={{ display: 'inline-block', minWidth: '100%', marginTop: '10px' }}>
-      <span className="ds-title">{label}</span>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', padding: '20px 0 10px 0' }}>
-        {data.map((row, rIdx) => (
-          <div key={rIdx} style={{ display: 'flex', gap: '4px' }}>
-            <div style={{ width: '20px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.6rem', color: 'var(--text-secondary)' }}>{rIdx}</div>
-            {row.map((cell, cIdx) => {
-              // Check if any pointer is at this (rIdx, cIdx)
-              const activePointers = Object.entries(pointers).filter(([_, coords]) => coords[0] === rIdx && coords[1] === cIdx);
-              
-              return (
-                <motion.div
-                  key={`${rIdx}-${cIdx}`}
-                  layout
-                  style={{
-                    width: '40px',
-                    height: '40px',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    background: activePointers.length ? 'rgba(59, 130, 246, 0.2)' : 'var(--surface-color-hover)',
-                    border: activePointers.length ? '1px solid var(--primary-color)' : '1px solid var(--border-color)',
-                    borderRadius: '6px',
-                    fontSize: '0.85rem',
-                    position: 'relative'
-                  }}
-                >
-                  {cell !== null ? String(cell) : ''}
-                  
-                  {activePointers.length > 0 && (
-                     <div style={{ position: 'absolute', top: '-15px', right: '-15px', display: 'flex', gap: '2px', flexWrap: 'wrap', width: '40px', justifyContent: 'flex-end', zIndex: 10 }}>
-                        {activePointers.map(([pName]) => (
-                           <span key={pName} style={{ fontSize: '0.55rem', background: 'var(--primary-color)', color: '#fff', padding: '1px 3px', borderRadius: '3px', fontWeight: 'bold' }}>{pName}</span>
-                        ))}
-                     </div>
-                  )}
-                </motion.div>
-              );
-            })}
-          </div>
-        ))}
-        <div style={{ display: 'flex', gap: '4px', marginLeft: '24px', marginTop: '2px' }}>
-           {data[0]?.map((_, cIdx) => (
-              <div key={cIdx} style={{ width: '40px', textAlign: 'center', fontSize: '0.6rem', color: 'var(--text-secondary)' }}>{cIdx}</div>
-           ))}
-        </div>
-      </div>
-    </div>
-  );
-};
-
-export const SetVisualizer: React.FC<{ data: any[]; label: string }> = ({ data, label }) => {
-  return (
-    <div className="data-structure-container">
-      <span className="ds-title">{label} (Set)</span>
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '12px', padding: '10px 0' }}>
-        {data.length === 0 ? (
-           <span style={{ color: 'var(--text-secondary)', fontSize: '0.85rem', fontStyle: 'italic' }}>empty set</span>
-        ) : (
-          data.map((val) => (
-            <motion.div
-              key={val}
-              layout
-              initial={{ scale: 0, opacity: 0 }}
-              animate={{ scale: 1, opacity: 1 }}
-              style={{
-                padding: '8px 16px',
-                background: 'rgba(168, 85, 247, 0.1)',
-                border: '1px solid var(--secondary-color)',
-                borderRadius: '20px',
-                fontSize: '0.9rem',
-                color: 'var(--text-primary)',
-                fontWeight: 500
-              }}
-            >
-              {String(val)}
-            </motion.div>
-          ))
-        )}
-      </div>
-    </div>
-  );
-};
+// ─── Call Stack Visualizer ───────────────────────────────────────────────────
 
 export const CallStackVisualizer: React.FC<{ callStack: any[] }> = ({ callStack }) => {
-  if (!callStack || callStack.length === 0) return null;
-  
+  if (!callStack?.length) return null;
   return (
-    <div className="data-structure-container" style={{ background: 'var(--surface-color)', border: '1px solid var(--border-color)' }}>
+    <div className="data-structure-container">
       <span className="ds-title">Call Stack</span>
-      <div style={{ display: 'flex', flexDirection: 'column-reverse', gap: '8px', padding: '10px 0' }}>
+      <div style={{ display: 'flex', flexDirection: 'column-reverse', gap: '8px', padding: '8px 0' }}>
         <AnimatePresence>
           {callStack.map((frame, idx) => {
             const isTop = idx === callStack.length - 1;
+            const primLocals = Object.entries(frame.locals ?? {}).filter(([, v]) =>
+              v === null || ['string', 'number', 'boolean'].includes(typeof v)
+            );
             return (
               <motion.div
-                key={`${frame.name}-${idx}`}
-                layout
-                initial={{ opacity: 0, x: -20 }}
-                animate={{ opacity: 1, x: 0 }}
-                exit={{ opacity: 0, scale: 0.9 }}
-                style={{
-                  padding: '12px',
-                  background: isTop ? 'rgba(59, 130, 246, 0.15)' : 'rgba(255, 255, 255, 0.02)',
-                  border: isTop ? '1px solid var(--primary-color)' : '1px solid rgba(255, 255, 255, 0.05)',
-                  borderRadius: '8px',
-                  display: 'flex',
-                  flexDirection: 'column',
-                  gap: '4px'
-                }}
+                key={`${frame.name}-${idx}`} layout
+                initial={{ opacity: 0, x: -16 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, scale: 0.9 }}
+                style={{ padding: '10px 12px', background: isTop ? 'rgba(59,130,246,0.13)' : 'rgba(255,255,255,0.02)', border: `1px solid ${isTop ? 'var(--primary-color)' : 'rgba(255,255,255,0.06)'}`, borderRadius: '8px' }}
               >
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <span style={{ fontWeight: 'bold', color: isTop ? 'var(--primary-color)' : 'var(--text-secondary)' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: primLocals.length ? '6px' : 0 }}>
+                  <span style={{ fontWeight: 700, fontFamily: 'var(--font-mono)', fontSize: '0.85rem', color: isTop ? 'var(--primary-color)' : 'var(--text-secondary)' }}>
                     {frame.name}()
                   </span>
-                  {frame.line && <span style={{ fontSize: '0.7rem', color: 'var(--text-secondary)' }}>L{frame.line}</span>}
+                  <span style={{ fontSize: '0.68rem', color: 'var(--text-secondary)' }}>L{frame.line}</span>
                 </div>
-                
-                {/* Show minimal locals for the frame */}
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', marginTop: '4px' }}>
-                  {Object.entries(frame.locals || {}).map(([k, v]) => {
-                    const isPrim = v === null || ['string', 'number', 'boolean'].includes(typeof v);
-                    if (!isPrim) return null;
-                    return (
-                      <span key={k} style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
-                        {k}: <span style={{ color: 'var(--text-primary)' }}>{String(v)}</span>
-                      </span>
-                    )
-                  })}
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+                  {primLocals.map(([k, v]) => (
+                    <span key={k} style={{ fontSize: '0.72rem', color: 'var(--text-secondary)', fontFamily: 'var(--font-mono)' }}>
+                      {k}: <span style={{ color: 'var(--text-primary)' }}>{String(v)}</span>
+                    </span>
+                  ))}
                 </div>
               </motion.div>
             );
           })}
         </AnimatePresence>
+      </div>
+    </div>
+  );
+};
+
+// ─── Returned Value Visualizer ───────────────────────────────────────────────
+
+export const ReturnedValueVisualizer: React.FC<{ value: any }> = ({ value }) => {
+  if (value === undefined || value === null) return null;
+  return (
+    <div className="data-structure-container" style={{ border: '2px solid var(--accent-color)', background: 'rgba(16,185,129,0.06)' }}>
+      <span className="ds-title" style={{ color: 'var(--accent-color)' }}>Return Value</span>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '12px', padding: '4px 0' }}>
+        <CornerDownRight size={22} color="var(--accent-color)" />
+        <span style={{ fontSize: '1.4rem', fontWeight: 700, fontFamily: 'var(--font-mono)', wordBreak: 'break-all' }}>
+          {renderPrimitive(value)}
+        </span>
       </div>
     </div>
   );

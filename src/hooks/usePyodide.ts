@@ -14,22 +14,13 @@ export function usePyodide() {
   useEffect(() => {
     async function initPyodide() {
       try {
-        if (!window.loadPyodide) {
-          // If script hasn't loaded yet, wait a bit
-          let retries = 0;
-          while (!window.loadPyodide && retries < 50) {
-            await new Promise(resolve => setTimeout(resolve, 100));
-            retries++;
-          }
+        let retries = 0;
+        while (!window.loadPyodide && retries < 60) {
+          await new Promise(resolve => setTimeout(resolve, 100));
+          retries++;
         }
-
-        if (!window.loadPyodide) {
-          throw new Error('Pyodide script failed to load');
-        }
-
-        const py = await window.loadPyodide({
-          indexURL: "https://cdn.jsdelivr.net/pyodide/v0.26.4/full/"
-        });
+        if (!window.loadPyodide) throw new Error('Pyodide failed to load from CDN. Check your internet connection.');
+        const py = await window.loadPyodide({ indexURL: 'https://cdn.jsdelivr.net/pyodide/v0.26.4/full/' });
         setPyodide(py);
         setLoading(false);
       } catch (err: any) {
@@ -37,25 +28,15 @@ export function usePyodide() {
         setLoading(false);
       }
     }
-
     initPyodide();
   }, []);
 
   const runTrace = async (code: string, entryPoint: string, args: string, tracerScript: string) => {
     if (!pyodide) return null;
-
     try {
-      // Load the tracer script into the pyodide environment
       await pyodide.runPythonAsync(tracerScript);
-      
-      // Convert JS args to Python
-      const pyArgs = pyodide.toPy(args);
-      
-      // Call our tracer function
-      const traceResult = await pyodide.globals.get('trace_execution')(code, entryPoint, pyArgs);
-      const result = traceResult.toJs({ dict_converter: Object.fromEntries });
-      
-      return result;
+      const jsonStr: string = await pyodide.globals.get('trace_execution')(code, entryPoint, args);
+      return JSON.parse(jsonStr);
     } catch (err: any) {
       return { error: err.message };
     }

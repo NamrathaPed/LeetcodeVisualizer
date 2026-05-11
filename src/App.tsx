@@ -1,174 +1,218 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import Editor, { loader } from '@monaco-editor/react';
 
-// Configure Monaco loader to use a specific CDN version for stability
-loader.config({
-  paths: {
-    vs: 'https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.44.0/min/vs'
-  }
-});
+loader.config({ paths: { vs: 'https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.44.0/min/vs' } });
+
 import { usePyodide } from './hooks/usePyodide';
-import { ArrayVisualizer, VariableVisualizer, TreeVisualizer, LinkedListVisualizer, MapVisualizer, ReturnedValueVisualizer, CallStackVisualizer, MatrixVisualizer, SetVisualizer } from './components/Visualizers';
+import {
+  ArrayVisualizer, VariableVisualizer, TreeVisualizer, LinkedListVisualizer,
+  MapVisualizer, ReturnedValueVisualizer, CallStackVisualizer, MatrixVisualizer,
+  SetVisualizer, DequeVisualizer, TupleVisualizer, CounterVisualizer
+} from './components/Visualizers';
 import { TRACER_PYTHON } from './lib/tracer';
-import { 
-  Play, 
-  Pause, 
-  ChevronLeft, 
-  ChevronRight, 
-  RotateCcw, 
-  Zap,
-  Code as CodeIcon,
-  LayoutDashboard,
-  History,
-  Activity
+import {
+  Play, Pause, ChevronLeft, ChevronRight, RotateCcw, Zap,
+  Code as CodeIcon, LayoutDashboard, History, Activity, AlertCircle, CheckCircle2
 } from 'lucide-react';
 
 const DEFAULT_CODE = `class Solution:
     def twoSum(self, nums: List[int], target: int) -> List[int]:
-        prevMap = {} # val : index
-        
+        prevMap = {}  # val -> index
+
         for i, n in enumerate(nums):
             diff = target - n
             if diff in prevMap:
                 return [prevMap[diff], i]
             prevMap[n] = i
-        return
+        return []
 `;
 
-const DEFAULT_ARGS = "[[2, 7, 11, 15], 9]";
+const DEFAULT_ARGS = '[[2, 7, 11, 15], 9]';
+
+const SPEED_OPTIONS = [
+  { label: '0.25×', ms: 2000 },
+  { label: '0.5×',  ms: 1000 },
+  { label: '1×',    ms: 500  },
+  { label: '2×',    ms: 250  },
+  { label: '4×',    ms: 100  },
+];
+
+// Variables whose names suggest they are array indices / pointers
+const POINTER_NAMES = new Set([
+  'i', 'j', 'k', 'l', 'r', 'p', 'q', 'x', 'y',
+  'left', 'right', 'mid', 'start', 'end', 'idx', 'index',
+  'ptr', 'lo', 'hi', 'low', 'high', 'begin', 'curr', 'cur',
+  'prev', 'next', 'head', 'tail', 'top', 'bot', 'front', 'back',
+  'slow', 'fast', 'pos', 'pointer', 'anchor', 'pivot', 'runner',
+]);
 
 export default function App() {
-  const [code, setCode] = useState(DEFAULT_CODE);
-  const [argsStr, setArgsStr] = useState(DEFAULT_ARGS);
-  const [snapshots, setSnapshots] = useState<any[]>([]);
+  const [code, setCode]             = useState(DEFAULT_CODE);
+  const [argsStr, setArgsStr]       = useState(DEFAULT_ARGS);
+  const [snapshots, setSnapshots]   = useState<any[]>([]);
   const [currentStep, setCurrentStep] = useState(0);
-  const [isPlaying, setIsPlaying] = useState(false);
-  const [viewMode, setViewMode] = useState<'live' | 'history'>('live');
-  const [error, setError] = useState<string | null>(null);
-  const { runTrace, loading, error: pyError } = usePyodide();
-  
-  const timerRef = useRef<any>(null);
-  const editorRef = useRef<any>(null);
-  const decorationsRef = useRef<string[]>([]);
+  const [isPlaying, setIsPlaying]   = useState(false);
+  const [speedIdx, setSpeedIdx]     = useState(2);       // default 1×
+  const [viewMode, setViewMode]     = useState<'live' | 'history'>('live');
+  const [error, setError]           = useState<string | null>(null);
+  const [execError, setExecError]   = useState<string | null>(null);
+  const [isRunning, setIsRunning]   = useState(false);
+  const [traceResult, setTraceResult] = useState<any | null>(null);
 
+  const { runTrace, loading, error: pyError } = usePyodide();
+  const timerRef        = useRef<any>(null);
+  const editorRef       = useRef<any>(null);
+  const decorationsRef  = useRef<string[]>([]);
+
+  const speedMs = SPEED_OPTIONS[speedIdx].ms;
+
+  // Auto-play
   useEffect(() => {
     if (isPlaying && currentStep < snapshots.length - 1) {
-      timerRef.current = setTimeout(() => {
-        setCurrentStep(prev => prev + 1);
-      }, 500);
-    } else {
+      timerRef.current = setTimeout(() => setCurrentStep(s => s + 1), speedMs);
+    } else if (isPlaying && currentStep >= snapshots.length - 1) {
       setIsPlaying(false);
     }
     return () => clearTimeout(timerRef.current);
-  }, [isPlaying, currentStep, snapshots.length]);
+  }, [isPlaying, currentStep, snapshots.length, speedMs]);
 
-  const currentSnapshot = snapshots[currentStep] || { line: 0, locals: {} };
+  // Keyboard shortcuts
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.target instanceof HTMLTextAreaElement || e.target instanceof HTMLInputElement) return;
+      if (!snapshots.length) return;
+      if (e.key === 'ArrowRight') { e.preventDefault(); setCurrentStep(s => Math.min(snapshots.length - 1, s + 1)); }
+      if (e.key === 'ArrowLeft')  { e.preventDefault(); setCurrentStep(s => Math.max(0, s - 1)); }
+      if (e.key === ' ')          { e.preventDefault(); setIsPlaying(p => !p); }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [snapshots.length]);
 
+  const currentSnapshot = snapshots[currentStep] ?? { line: 0, locals: {}, callStack: [], event: 'line', changedVars: [] };
+
+  // Editor line highlight
   useEffect(() => {
     if (editorRef.current && currentSnapshot.line) {
-      decorationsRef.current = editorRef.current.deltaDecorations(decorationsRef.current, [
-        {
-          range: { startLineNumber: currentSnapshot.line, startColumn: 1, endLineNumber: currentSnapshot.line, endColumn: 1 },
-          options: {
-            isWholeLine: true,
-            className: 'current-line-highlight',
-            glyphMarginClassName: 'current-line-glyph',
-          },
-        },
-      ]);
+      decorationsRef.current = editorRef.current.deltaDecorations(decorationsRef.current, [{
+        range: { startLineNumber: currentSnapshot.line, startColumn: 1, endLineNumber: currentSnapshot.line, endColumn: 1 },
+        options: { isWholeLine: true, className: 'current-line-highlight', glyphMarginClassName: 'current-line-glyph' },
+      }]);
       editorRef.current.revealLineInCenter(currentSnapshot.line);
     }
   }, [currentSnapshot.line, snapshots]);
 
-  const handleRun = async () => {
+  const handleRun = useCallback(async () => {
     setError(null);
-    try {
-      // Detect method name from code, skipping __init__
-      let methodToTrace = 'twoSum';
-      const methods = [...code.matchAll(/def\s+([a-zA-Z_]\w*)\s*\(/g)].map(m => m[1]);
-      const mainMethod = methods.find(m => m !== '__init__');
-      if (mainMethod) {
-        methodToTrace = mainMethod;
-      }
+    setExecError(null);
+    setTraceResult(null);
+    setIsRunning(true);
+    setIsPlaying(false);
+    setCurrentStep(0);
+    setSnapshots([]);
 
-      const result = await runTrace(code, methodToTrace, argsStr, TRACER_PYTHON);
-      
+    try {
+      const methods = [...code.matchAll(/def\s+([a-zA-Z_]\w*)\s*\(/g)].map(m => m[1]);
+      const mainMethod = methods.find(m => m !== '__init__') ?? 'solution';
+
+      const result = await runTrace(code, mainMethod, argsStr, TRACER_PYTHON);
+
+      if (!result) {
+        setError('No result returned. Pyodide may not be ready yet.');
+        return;
+      }
       if (result.error) {
         setError(result.error);
-      } else {
-        setSnapshots(result.snapshots);
-        setCurrentStep(0);
+        return;
       }
+
+      const snaps = result.snapshots ?? [];
+      setSnapshots(snaps);
+      setCurrentStep(0);
+      setTraceResult(result);
+
+      if (result.execError) setExecError(result.execError);
     } catch (err: any) {
       setError(err.message);
+    } finally {
+      setIsRunning(false);
     }
-  };
+  }, [code, argsStr, runTrace]);
 
-  const renderVisualizers = (snapshot: any, index?: number) => {
-    const { locals, returnValue, callStack } = snapshot;
-    
-    // Auto-detect pointers: integer variables that could be array/matrix indices
+  // Extract current line text for the step info panel
+  const codeLines = code.split('\n');
+  const currentLineText = currentSnapshot.line > 0
+    ? codeLines[currentSnapshot.line - 1]?.trimStart() ?? ''
+    : '';
+
+  // History: show only snapshots where something changed or it's a return
+  const historySnapshots = snapshots.filter((s, i) => {
+    if (i === 0) return true;
+    if (s.event === 'return') return true;
+    return (s.changedVars?.length ?? 0) > 0;
+  });
+
+  const renderVisualizers = (snapshot: any, stepIdx?: number) => {
+    const { locals = {}, returnValue, callStack = [], changedVars = [], event } = snapshot;
+
+    // Pointer detection: only named pointer variables within bounds of a known array
+    const arrays = Object.entries(locals).filter(([, v]) => Array.isArray(v)) as [string, any[]][];
+    const maxLen  = arrays.length > 0 ? Math.max(...arrays.map(([, v]) => v.length)) : 0;
+
     const pointers1D: Record<string, number> = {};
     const pointers2D: Record<string, number[]> = {};
-    
-    // First pass: identify integers and arrays/matrices
-    const intVars = Object.entries(locals).filter(([_, v]) => typeof v === 'number') as [string, number][];
-    
-    intVars.forEach(([k, v]) => {
-      // Very simple heuristic: if it's named 'left', 'right', 'mid', 'i', 'j', 'idx', etc.
-      // or if there's only one array and the value is within bounds, let's just make it a pointer
-      // For now, any integer is a potential pointer if it fits in an array.
-      if (v >= 0) {
-        pointers1D[k] = v; // Will be filtered in the visualizer if out of bounds, but ArrayVisualizer handles it
+
+    Object.entries(locals).forEach(([k, v]) => {
+      if (typeof v !== 'number' || !Number.isInteger(v) || v < 0) return;
+      if (POINTER_NAMES.has(k.toLowerCase()) && v < maxLen) {
+        pointers1D[k] = v;
       }
     });
-    
-    // For 2D pointers, we look for pairs like (r, c) or (row, col)
-    if (locals.r !== undefined && locals.c !== undefined) pointers2D['r,c'] = [locals.r, locals.c];
-    if (locals.row !== undefined && locals.col !== undefined) pointers2D['row,col'] = [locals.row, locals.col];
-    
+
+    if (locals.r !== undefined && locals.c !== undefined) pointers2D['(r,c)'] = [locals.r, locals.c];
+    if (locals.row !== undefined && locals.col !== undefined) pointers2D['(row,col)'] = [locals.row, locals.col];
+
     return (
-      <div key={index} className="snapshot-group" style={{ marginBottom: index !== undefined ? '60px' : '0' }}>
-        {index !== undefined && (
-          <div style={{ marginBottom: '16px', display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--primary-color)' }}>
-            <Activity size={16} />
-            <span style={{ fontWeight: 700, fontSize: '0.9rem', textTransform: 'uppercase', letterSpacing: '0.1em' }}>
-              Step {index + 1} (Line {snapshot.line})
-            </span>
+      <div key={stepIdx ?? 'live'} className="snapshot-group" style={{ marginBottom: stepIdx !== undefined ? '60px' : 0 }}>
+        {stepIdx !== undefined && (
+          <div className="step-header">
+            <Activity size={15} />
+            <span>Step {stepIdx + 1} &mdash; Line {snapshot.line}</span>
+            <span className={`event-badge event-${event}`}>{event?.toUpperCase()}</span>
+            {changedVars.length > 0 && (
+              <span className="changed-vars-badge">
+                changed: {changedVars.join(', ')}
+              </span>
+            )}
           </div>
         )}
-        
+
         <div className="visualizer-grid">
-          {/* Left Column: Call Stack & Variables */}
+          {/* Left column */}
           <div className="visualizer-col-small">
             <CallStackVisualizer callStack={callStack} />
-            <VariableVisualizer variables={locals} />
+            <VariableVisualizer variables={locals} changedVars={changedVars} />
           </div>
-          
-          {/* Right Column: Complex Data Structures */}
+
+          {/* Right column */}
           <div className="visualizer-col-main">
             {returnValue !== undefined && returnValue !== null && (
               <ReturnedValueVisualizer value={returnValue} />
             )}
-            
+
             {Object.entries(locals).map(([name, value]) => {
               if (Array.isArray(value)) {
                 return <ArrayVisualizer key={name} label={name} data={value} pointers={pointers1D} />;
               }
               if (typeof value === 'object' && value !== null) {
-                const typedValue = value as { type?: string; data?: any; values?: any };
-                if (typedValue.type === 'Matrix') {
-                  return <MatrixVisualizer key={name} label={name} data={typedValue.data} pointers={pointers2D} />;
-                }
-                if (typedValue.type === 'Set') {
-                  return <SetVisualizer key={name} label={name} data={typedValue.values} />;
-                }
-                if (typedValue.type === 'TreeNode') {
-                  return <TreeVisualizer key={name} label={name} data={value} />;
-                }
-                if (typedValue.type === 'LinkedList') {
-                  return <LinkedListVisualizer key={name} label={name} data={value} />;
-                }
+                const typed = value as { type?: string; data?: any; values?: any };
+                if (typed.type === 'Matrix')     return <MatrixVisualizer     key={name} label={name} data={typed.data}   pointers={pointers2D} />;
+                if (typed.type === 'Set')        return <SetVisualizer        key={name} label={name} data={typed.values} />;
+                if (typed.type === 'Tuple')      return <TupleVisualizer      key={name} label={name} data={typed.values} />;
+                if (typed.type === 'Deque')      return <DequeVisualizer      key={name} label={name} data={typed.values} />;
+                if (typed.type === 'Counter')    return <CounterVisualizer    key={name} label={name} data={typed.data}   />;
+                if (typed.type === 'TreeNode')   return <TreeVisualizer       key={name} label={name} data={value}        />;
+                if (typed.type === 'LinkedList') return <LinkedListVisualizer key={name} label={name} data={value}        />;
                 return <MapVisualizer key={name} label={name} data={value} />;
               }
               return null;
@@ -179,34 +223,38 @@ export default function App() {
     );
   };
 
+  const disabled = !snapshots.length || isRunning;
+
   return (
     <div className="app-container">
       <header>
         <div className="logo">
-          <Zap size={24} fill="currentColor" />
-          NeetVisualizer
+          <Zap size={22} fill="currentColor" />
+          AlgoTrace
         </div>
-        <div style={{ display: 'flex', gap: '16px', alignItems: 'center' }}>
+        <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
           <div className="view-toggle">
-             <button className={`toggle-btn ${viewMode === 'live' ? 'active' : ''}`} onClick={() => setViewMode('live')}>
-               <Play size={14} /> Live
-             </button>
-             <button className={`toggle-btn ${viewMode === 'history' ? 'active' : ''}`} onClick={() => setViewMode('history')}>
-               <History size={14} /> History
-             </button>
+            <button className={`toggle-btn ${viewMode === 'live' ? 'active' : ''}`} onClick={() => setViewMode('live')}>
+              <Play size={13} /> Live
+            </button>
+            <button className={`toggle-btn ${viewMode === 'history' ? 'active' : ''}`} onClick={() => setViewMode('history')}>
+              <History size={13} /> History
+            </button>
           </div>
-          {loading && <span style={{ color: 'var(--text-secondary)', fontSize: '0.9rem' }}>Initializing Python...</span>}
-          <button className="btn btn-primary" onClick={handleRun} disabled={loading}>
-            <Play size={18} fill="currentColor" />
-            Run Trace
+          {loading && <span className="status-text">Initializing Python runtime…</span>}
+          {isRunning && <span className="status-text running-pulse">Tracing…</span>}
+          <button className="btn btn-primary" onClick={handleRun} disabled={loading || isRunning}>
+            <Play size={16} fill="currentColor" />
+            {isRunning ? 'Running…' : 'Run Trace'}
           </button>
         </div>
       </header>
 
+      {/* ── Editor pane ── */}
       <div className="editor-pane">
-        <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--border-color)', display: 'flex', alignItems: 'center', gap: '8px' }}>
-          <CodeIcon size={16} color="var(--text-secondary)" />
-          <span style={{ fontSize: '0.85rem', fontWeight: 600, color: 'var(--text-secondary)' }}>SOLUTION.PY</span>
+        <div className="pane-title-bar">
+          <CodeIcon size={14} color="var(--text-secondary)" />
+          <span>SOLUTION.PY</span>
         </div>
         <div style={{ flex: 1, overflow: 'hidden' }}>
           <Editor
@@ -214,91 +262,144 @@ export default function App() {
             defaultLanguage="python"
             theme="vs-dark"
             value={code}
-            onChange={(v) => setCode(v || '')}
+            onChange={v => setCode(v ?? '')}
             options={{
               minimap: { enabled: false },
-              fontSize: 14,
+              fontSize: 13,
               lineNumbers: 'on',
               glyphMargin: true,
               scrollBeyondLastLine: false,
+              fontFamily: 'JetBrains Mono, Fira Code, monospace',
             }}
-            onMount={(editor) => {
-              editorRef.current = editor;
-            }}
+            onMount={editor => { editorRef.current = editor; }}
           />
         </div>
-        <div style={{ padding: '16px', borderTop: '1px solid var(--border-color)', background: '#111' }}>
-          <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', marginBottom: '8px', display: 'flex', justifyContent: 'space-between' }}>
-            <span>FUNCTION ARGUMENTS (PYTHON-STYLE)</span>
-            <span style={{ opacity: 0.6 }}>e.g. nums=[1,2], k=3 or [[1,2,3], 9]</span>
+        <div className="args-pane">
+          <div className="args-label">
+            <span>ARGUMENTS (Python / JSON)</span>
+            <span className="args-hint">e.g. nums=[1,2], k=3 &nbsp;|&nbsp; [[1,2,3], 9] &nbsp;|&nbsp; make_list([1,2,3])</span>
           </div>
-          <textarea 
-            className="args-textarea" 
+          <textarea
+            className="args-textarea"
             value={argsStr}
-            placeholder="e.g. nums = [1, 2, 3], target = 10"
-            onChange={(e) => setArgsStr(e.target.value)}
+            placeholder="e.g. [2, 7, 11, 15], 9"
+            onChange={e => setArgsStr(e.target.value)}
           />
         </div>
       </div>
 
+      {/* ── Visualizer pane ── */}
       <div className="visualizer-pane">
+        {/* Step info bar */}
+        {snapshots.length > 0 && viewMode === 'live' && (
+          <div className="step-info-bar">
+            <span className={`event-badge event-${currentSnapshot.event}`}>
+              {currentSnapshot.event?.toUpperCase()}
+            </span>
+            <span className="step-info-line">
+              Line {currentSnapshot.line}: <code>{currentLineText}</code>
+            </span>
+            {(currentSnapshot.changedVars ?? []).length > 0 && (
+              <span className="changed-pill">
+                ✦ {currentSnapshot.changedVars.join(', ')}
+              </span>
+            )}
+            {traceResult?.result !== undefined && currentStep === snapshots.length - 1 && (
+              <span className="result-pill">
+                <CheckCircle2 size={13} /> result: {JSON.stringify(traceResult.result)}
+              </span>
+            )}
+          </div>
+        )}
+
         <div className="visualization-canvas">
+          {/* Errors */}
           {(error || pyError) && (
-            <div style={{ padding: '16px', background: 'rgba(239, 68, 68, 0.1)', border: '1px solid var(--error-color)', borderRadius: '8px', color: 'var(--error-color)', fontSize: '0.9rem', marginBottom: '20px' }}>
-              <pre style={{ whiteSpace: 'pre-wrap' }}>{error || pyError}</pre>
+            <div className="error-box">
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
+                <AlertCircle size={16} />
+                <strong>Error</strong>
+              </div>
+              <pre>{error || pyError}</pre>
+            </div>
+          )}
+          {execError && (
+            <div className="error-box warn">
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
+                <AlertCircle size={16} />
+                <strong>Runtime Exception (partial trace available)</strong>
+              </div>
+              <pre>{execError}</pre>
             </div>
           )}
 
+          {/* Visualizations */}
           {viewMode === 'live' ? (
-            renderVisualizers(currentSnapshot)
+            snapshots.length > 0 ? renderVisualizers(currentSnapshot) : null
           ) : (
             <div className="history-timeline">
-               {snapshots.filter((s, i) => {
-                  // Filter to only show snapshots where a variable changed or it's a return
-                  if (i === 0) return true;
-                  if (s.event === 'return') return true;
-                  return JSON.stringify(s.locals) !== JSON.stringify(snapshots[i-1].locals);
-               }).map((snapshot, idx) => renderVisualizers(snapshot, idx))}
+              {historySnapshots.map((snap, idx) => renderVisualizers(snap, idx))}
             </div>
           )}
 
-          {!snapshots.length && !loading && !error && (
-            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', color: 'var(--text-secondary)' }}>
-               <LayoutDashboard size={48} strokeWidth={1} style={{ marginBottom: '16px', opacity: 0.5 }} />
-               <p>Write your solution and click Run Trace to visualize execution.</p>
+          {/* Empty state */}
+          {!snapshots.length && !isRunning && !error && !pyError && (
+            <div className="empty-state">
+              <LayoutDashboard size={44} strokeWidth={1} style={{ marginBottom: '16px', opacity: 0.4 }} />
+              <p style={{ marginBottom: '8px' }}>Paste any Python solution and click <strong>Run Trace</strong>.</p>
+              <p className="empty-hints">
+                Supports: arrays · matrices · linked lists · trees · dicts · sets · deques · tuples · recursive functions
+              </p>
+              <p className="empty-hints" style={{ marginTop: '6px' }}>
+                Keyboard: <kbd>←</kbd> <kbd>→</kbd> step &nbsp; <kbd>Space</kbd> play/pause
+              </p>
             </div>
           )}
         </div>
       </div>
 
+      {/* ── Controls pane ── */}
       <div className="controls-pane">
         <div className="step-controls">
-          <button className="btn" onClick={() => setCurrentStep(0)} disabled={!snapshots.length}>
-            <RotateCcw size={18} />
+          <button className="btn" title="Reset (Home)" onClick={() => { setCurrentStep(0); setIsPlaying(false); }} disabled={disabled}>
+            <RotateCcw size={16} />
           </button>
-          <button className="btn" onClick={() => setCurrentStep(Math.max(0, currentStep - 1))} disabled={!snapshots.length}>
-            <ChevronLeft size={20} />
+          <button className="btn" title="Previous (←)" onClick={() => setCurrentStep(s => Math.max(0, s - 1))} disabled={disabled}>
+            <ChevronLeft size={18} />
           </button>
-          <button className="btn" onClick={() => setIsPlaying(!isPlaying)} disabled={!snapshots.length}>
-            {isPlaying ? <Pause size={20} fill="currentColor" /> : <Play size={20} fill="currentColor" />}
+          <button className="btn btn-play" title="Play/Pause (Space)" onClick={() => setIsPlaying(p => !p)} disabled={disabled}>
+            {isPlaying ? <Pause size={18} fill="currentColor" /> : <Play size={18} fill="currentColor" />}
           </button>
-          <button className="btn" onClick={() => setCurrentStep(Math.min(snapshots.length - 1, currentStep + 1))} disabled={!snapshots.length}>
-            <ChevronRight size={20} />
+          <button className="btn" title="Next (→)" onClick={() => setCurrentStep(s => Math.min(snapshots.length - 1, s + 1))} disabled={disabled}>
+            <ChevronRight size={18} />
           </button>
         </div>
 
-        <input 
-          type="range" 
+        <input
+          type="range"
           className="progress-slider"
           min={0}
           max={snapshots.length ? snapshots.length - 1 : 0}
           value={currentStep}
-          onChange={(e) => setCurrentStep(parseInt(e.target.value))}
-          disabled={!snapshots.length}
+          onChange={e => { setCurrentStep(parseInt(e.target.value)); setIsPlaying(false); }}
+          disabled={disabled}
         />
 
-        <div style={{ minWidth: '80px', textAlign: 'right', fontSize: '0.9rem', color: 'var(--text-secondary)', fontWeight: 500 }}>
-          Step {snapshots.length ? currentStep + 1 : 0} / {snapshots.length}
+        <div className="controls-right">
+          <div style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', fontWeight: 500, whiteSpace: 'nowrap' }}>
+            {snapshots.length ? `${currentStep + 1} / ${snapshots.length}` : '— / —'}
+          </div>
+          <div className="speed-selector">
+            {SPEED_OPTIONS.map((opt, i) => (
+              <button
+                key={i}
+                className={`speed-btn ${i === speedIdx ? 'active' : ''}`}
+                onClick={() => setSpeedIdx(i)}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
         </div>
       </div>
     </div>
