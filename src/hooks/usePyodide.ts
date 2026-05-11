@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef } from 'react';
+import { useEffect, useState } from 'react';
 
 declare global {
   interface Window {
@@ -14,20 +14,22 @@ export function usePyodide() {
   useEffect(() => {
     async function initPyodide() {
       try {
-        // Load the pyodide script dynamically
-        if (!document.getElementById('pyodide-script')) {
-          const script = document.createElement('script');
-          script.id = 'pyodide-script';
-          script.src = 'https://cdn.jsdelivr.net/pyodide/v0.26.4/full/pyodide.js';
-          script.async = true;
-          document.head.appendChild(script);
-
-          await new Promise((resolve) => {
-            script.onload = resolve;
-          });
+        if (!window.loadPyodide) {
+          // If script hasn't loaded yet, wait a bit
+          let retries = 0;
+          while (!window.loadPyodide && retries < 50) {
+            await new Promise(resolve => setTimeout(resolve, 100));
+            retries++;
+          }
         }
 
-        const py = await window.loadPyodide();
+        if (!window.loadPyodide) {
+          throw new Error('Pyodide script failed to load');
+        }
+
+        const py = await window.loadPyodide({
+          indexURL: "https://cdn.jsdelivr.net/pyodide/v0.26.4/full/"
+        });
         setPyodide(py);
         setLoading(false);
       } catch (err: any) {
@@ -39,7 +41,7 @@ export function usePyodide() {
     initPyodide();
   }, []);
 
-  const runTrace = async (code: string, entryPoint: string, args: any[], tracerScript: string) => {
+  const runTrace = async (code: string, entryPoint: string, args: string, tracerScript: string) => {
     if (!pyodide) return null;
 
     try {

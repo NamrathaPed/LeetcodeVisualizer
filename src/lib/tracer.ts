@@ -4,11 +4,11 @@ import json
 import traceback
 import copy
 
-def trace_execution(code, entry_point, args):
+def trace_execution(code, entry_point, args_input):
     snapshots = []
     
     def tracer(frame, event, arg):
-        if event not in ('line', 'return'):
+        if event not in ('line', 'return', 'call'):
             return tracer
             
         filename = frame.f_code.co_filename
@@ -17,19 +17,41 @@ def trace_execution(code, entry_point, args):
             
         line_no = frame.f_lineno
         
+        # Build call stack
+        call_stack = []
+        curr_frame = frame
+        while curr_frame:
+            if curr_frame.f_code.co_filename == '<string>' and curr_frame.f_code.co_name != '<module>':
+                frame_locals = {}
+                for k, v in curr_frame.f_locals.items():
+                    if not k.startswith('__') and k != 'self': # Ignore self to reduce clutter
+                        try:
+                            frame_locals[k] = serialize_value(v)
+                        except Exception:
+                            frame_locals[k] = str(v)
+                call_stack.append({
+                    'name': curr_frame.f_code.co_name,
+                    'locals': frame_locals,
+                    'line': curr_frame.f_lineno
+                })
+            curr_frame = curr_frame.f_back
+        call_stack.reverse()
+        
         local_vars = {}
         for k, v in frame.f_locals.items():
             if k.startswith('__'):
                 continue
-            
             try:
                 local_vars[k] = serialize_value(v)
             except Exception:
                 local_vars[k] = str(v)
                 
+        # For 'call' events, we might not want to capture a full snapshot unless we want to see the entry.
+        # Let's capture it.
         snapshots.append({
             'line': line_no,
             'locals': local_vars,
+            'callStack': call_stack,
             'event': event,
             'returnValue': serialize_value(arg) if event == 'return' else None
         })
@@ -39,11 +61,14 @@ def trace_execution(code, entry_point, args):
         if isinstance(v, (int, float, str, bool, type(None))):
             return v
         if isinstance(v, list):
+            # Detect Matrix (2D Array)
+            if len(v) > 0 and all(isinstance(row, list) for row in v):
+                return {'type': 'Matrix', 'data': [[serialize_value(item) for item in row] for row in v]}
             return [serialize_value(i) for i in v]
         if isinstance(v, dict):
             return {str(k): serialize_value(val) for k, val in v.items()}
         if isinstance(v, set):
-            return list(serialize_value(i) for i in v)
+            return {'type': 'Set', 'values': list(serialize_value(i) for i in v)}
         if hasattr(v, 'val') and hasattr(v, 'next'):
             return serialize_linked_list(v)
         if hasattr(v, 'val') and hasattr(v, 'left') and hasattr(v, 'right'):
@@ -126,29 +151,58 @@ def trace_execution(code, entry_point, args):
         
         if not func and 'Solution' in exec_globals:
             sol_class = exec_globals['Solution']
-            # If entry_point fails, try to find the first non-private method
             method_name = entry_point
-            if not hasattr(sol_class, method_name):
-                methods = [m for m in dir(sol_class) if not m.startswith('_') and callable(getattr(sol_class, m))]
-                if methods:
-                    method_name = methods[0]
+            # List all methods defined in the class (excluding inherited/special ones)
+            class_methods = [m for m, f in sol_class.__dict__.items() if callable(f) and not m.startswith('__')]
+            
+            if method_name not in class_methods:
+                if class_methods:
+                    method_name = class_methods[0]
             
             sol_instance = sol_class()
             func = getattr(sol_instance, method_name, None)
             
         if not func:
-            return {'error': f"Function '{entry_point}' not found in code. Make sure your function name matches or use 'class Solution'."}
+            return {'error': f"Function '{entry_point}' not found in code."}
+
+        # Parse arguments
+        args = []
+        kwargs = {}
+        
+        if args_input:
+            import re
+            # Clean up the input string to be a valid Python expression list
+            # We want to support "nums=[1,2], k=3" by turning it into a call or eval
+            
+            # Simple approach: If it looks like assignments, we can use a helper function to capture them
+            # We'll wrap the input in a function call to capture positional and keyword args
+            try:
+                # We create a wrapper that just returns its arguments
+                exec("def __capture_args(*a, **k): return a, k", exec_globals)
+                # Then we call it with the user's input string
+                capture_code = f"__capture_args({args_input})"
+                args, kwargs = eval(capture_code, exec_globals)
+            except Exception as e:
+                # Fallback to JSON if it's a simple list
+                try:
+                    import json
+                    parsed = json.loads(args_input)
+                    if isinstance(parsed, list):
+                        args = parsed
+                    else:
+                        args = [parsed]
+                except:
+                    return {'error': f"Failed to parse arguments: {str(e)}"}
         
         sys.settrace(tracer)
         try:
-            try:
-                func(*args)
-            except TypeError as e:
-                # Fallback: If user provided a single list but function expects one argument
-                if "positional argument" in str(e) or "given" in str(e):
-                    func(args)
-                else:
-                    raise e
+            func(*args, **kwargs)
+        except TypeError as e:
+            # Fallback for common argument mismatch issues
+            if "positional argument" in str(e) or "given" in str(e):
+                func(args)
+            else:
+                raise e
         finally:
             sys.settrace(None)
             

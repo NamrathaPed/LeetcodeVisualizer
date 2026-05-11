@@ -8,7 +8,7 @@ loader.config({
   }
 });
 import { usePyodide } from './hooks/usePyodide';
-import { ArrayVisualizer, VariableVisualizer, TreeVisualizer, LinkedListVisualizer, MapVisualizer, ReturnedValueVisualizer } from './components/Visualizers';
+import { ArrayVisualizer, VariableVisualizer, TreeVisualizer, LinkedListVisualizer, MapVisualizer, ReturnedValueVisualizer, CallStackVisualizer, MatrixVisualizer, SetVisualizer } from './components/Visualizers';
 import { TRACER_PYTHON } from './lib/tracer';
 import { 
   Play, 
@@ -83,16 +83,15 @@ export default function App() {
   const handleRun = async () => {
     setError(null);
     try {
-      const parsedArgs = JSON.parse(argsStr);
-      
-      // Detect method name from code
+      // Detect method name from code, skipping __init__
       let methodToTrace = 'twoSum';
-      const match = code.match(/def\s+(\w+)\s*\(/);
-      if (match) {
-        methodToTrace = match[1];
+      const methods = [...code.matchAll(/def\s+([a-zA-Z_]\w*)\s*\(/g)].map(m => m[1]);
+      const mainMethod = methods.find(m => m !== '__init__');
+      if (mainMethod) {
+        methodToTrace = mainMethod;
       }
 
-      const result = await runTrace(code, methodToTrace, parsedArgs, TRACER_PYTHON);
+      const result = await runTrace(code, methodToTrace, argsStr, TRACER_PYTHON);
       
       if (result.error) {
         setError(result.error);
@@ -106,7 +105,28 @@ export default function App() {
   };
 
   const renderVisualizers = (snapshot: any, index?: number) => {
-    const { locals, returnValue } = snapshot;
+    const { locals, returnValue, callStack } = snapshot;
+    
+    // Auto-detect pointers: integer variables that could be array/matrix indices
+    const pointers1D: Record<string, number> = {};
+    const pointers2D: Record<string, number[]> = {};
+    
+    // First pass: identify integers and arrays/matrices
+    const intVars = Object.entries(locals).filter(([_, v]) => typeof v === 'number') as [string, number][];
+    
+    intVars.forEach(([k, v]) => {
+      // Very simple heuristic: if it's named 'left', 'right', 'mid', 'i', 'j', 'idx', etc.
+      // or if there's only one array and the value is within bounds, let's just make it a pointer
+      // For now, any integer is a potential pointer if it fits in an array.
+      if (v >= 0) {
+        pointers1D[k] = v; // Will be filtered in the visualizer if out of bounds, but ArrayVisualizer handles it
+      }
+    });
+    
+    // For 2D pointers, we look for pairs like (r, c) or (row, col)
+    if (locals.r !== undefined && locals.c !== undefined) pointers2D['r,c'] = [locals.r, locals.c];
+    if (locals.row !== undefined && locals.col !== undefined) pointers2D['row,col'] = [locals.row, locals.col];
+    
     return (
       <div key={index} className="snapshot-group" style={{ marginBottom: index !== undefined ? '60px' : '0' }}>
         {index !== undefined && (
@@ -117,29 +137,43 @@ export default function App() {
             </span>
           </div>
         )}
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '24px' }}>
-          {returnValue !== undefined && returnValue !== null && (
-            <div style={{ gridColumn: 'span 2' }}>
+        
+        <div className="visualizer-grid">
+          {/* Left Column: Call Stack & Variables */}
+          <div className="visualizer-col-small">
+            <CallStackVisualizer callStack={callStack} />
+            <VariableVisualizer variables={locals} />
+          </div>
+          
+          {/* Right Column: Complex Data Structures */}
+          <div className="visualizer-col-main">
+            {returnValue !== undefined && returnValue !== null && (
               <ReturnedValueVisualizer value={returnValue} />
-            </div>
-          )}
-          <VariableVisualizer variables={locals} />
-          {Object.entries(locals).map(([name, value]) => {
-            if (Array.isArray(value)) {
-              return <ArrayVisualizer key={name} label={name} data={value} />;
-            }
-            if (typeof value === 'object' && value !== null) {
-              const typedValue = value as { type?: string };
-              if (typedValue.type === 'TreeNode') {
-                return <TreeVisualizer key={name} label={name} data={value} />;
+            )}
+            
+            {Object.entries(locals).map(([name, value]) => {
+              if (Array.isArray(value)) {
+                return <ArrayVisualizer key={name} label={name} data={value} pointers={pointers1D} />;
               }
-              if (typedValue.type === 'LinkedList') {
-                return <LinkedListVisualizer key={name} label={name} data={value} />;
+              if (typeof value === 'object' && value !== null) {
+                const typedValue = value as { type?: string; data?: any; values?: any };
+                if (typedValue.type === 'Matrix') {
+                  return <MatrixVisualizer key={name} label={name} data={typedValue.data} pointers={pointers2D} />;
+                }
+                if (typedValue.type === 'Set') {
+                  return <SetVisualizer key={name} label={name} data={typedValue.values} />;
+                }
+                if (typedValue.type === 'TreeNode') {
+                  return <TreeVisualizer key={name} label={name} data={value} />;
+                }
+                if (typedValue.type === 'LinkedList') {
+                  return <LinkedListVisualizer key={name} label={name} data={value} />;
+                }
+                return <MapVisualizer key={name} label={name} data={value} />;
               }
-              return <MapVisualizer key={name} label={name} data={value} />;
-            }
-            return null;
-          })}
+              return null;
+            })}
+          </div>
         </div>
       </div>
     );
@@ -195,14 +229,13 @@ export default function App() {
         </div>
         <div style={{ padding: '16px', borderTop: '1px solid var(--border-color)', background: '#111' }}>
           <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', marginBottom: '8px', display: 'flex', justifyContent: 'space-between' }}>
-            <span>FUNCTION ARGUMENTS (JSON LIST)</span>
-            <span style={{ opacity: 0.6 }}>e.g. [[1,2,3]] or [arg1, arg2]</span>
+            <span>FUNCTION ARGUMENTS (PYTHON-STYLE)</span>
+            <span style={{ opacity: 0.6 }}>e.g. nums=[1,2], k=3 or [[1,2,3], 9]</span>
           </div>
-          <input 
-            className="btn" 
-            style={{ width: '100%', fontFamily: 'var(--font-mono)', textAlign: 'left', background: '#000' }}
+          <textarea 
+            className="args-textarea" 
             value={argsStr}
-            placeholder="e.g. [[1, 2, 3], 10]"
+            placeholder="e.g. nums = [1, 2, 3], target = 10"
             onChange={(e) => setArgsStr(e.target.value)}
           />
         </div>
