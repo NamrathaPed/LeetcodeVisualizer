@@ -541,6 +541,81 @@ kbd {
   border-radius: 2px;
 }
 
+/* ─── Complexity banner ──────────────────────────────────────── */
+
+.complexity-banner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 20px;
+  background: rgba(0,0,0,0.3);
+  border-bottom: 1px solid var(--border-color);
+  flex-shrink: 0;
+  flex-wrap: wrap;
+  font-size: 0.8rem;
+}
+
+.complexity-item {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--text-secondary);
+}
+
+.complexity-item strong { color: var(--text-primary); }
+.complexity-item code {
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+  color: var(--accent-color);
+  font-weight: 700;
+  background: rgba(16,185,129,0.1);
+  padding: 1px 6px;
+  border-radius: 4px;
+}
+
+.pattern-badge {
+  font-size: 0.72rem;
+  font-weight: 700;
+  padding: 3px 10px;
+  border-radius: 10px;
+  letter-spacing: 0.03em;
+}
+
+.complexity-note {
+  font-size: 0.7rem;
+  color: var(--text-secondary);
+  opacity: 0.75;
+  white-space: nowrap;
+}
+
+/* ─── Recursion tree panel ───────────────────────────────────── */
+
+.recursion-tree-panel {
+  background: rgba(255,255,255,0.015);
+  border: 1px solid rgba(255,255,255,0.07);
+  border-radius: 12px;
+  padding: 0;
+  overflow: hidden;
+}
+
+.recursion-tree-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px;
+  background: rgba(59,130,246,0.06);
+  border-bottom: 1px solid rgba(59,130,246,0.15);
+  font-size: 0.8rem;
+  font-weight: 700;
+  color: var(--primary-color);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.recursion-tree-panel > div:last-child {
+  padding: 16px;
+}
+
 /* ─── Scrollbar styling ──────────────────────────────────────── */
 
 ::-webkit-scrollbar { width: 6px; height: 6px; }
